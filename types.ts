@@ -15,9 +15,9 @@ export interface ExamQuestion {
 export interface StudySection {
   topic: string; 
   content: StudyPoint[];
-  images?: string[]; // Blob URLs for images associated with this section
-  visualSummary?: string; // AI generated description/explanation of visual aids
-  questions?: ExamQuestion[]; // Generated exam questions for this section
+  images?: string[]; // Blob URLs/Base64 of the source page/slide for visual context
+  visualSummary?: string; 
+  questions?: ExamQuestion[];
 }
 
 export interface ParsedResult {
@@ -28,6 +28,25 @@ export interface ParsedResult {
 export interface ProcessingStatus {
   step: 'idle' | 'parsing' | 'generating' | 'complete' | 'error';
   message?: string;
+}
+
+// Complete File Session for Multi-file management
+export interface StudyFile {
+  id: string;
+  name: string;
+  uploadDate: number;
+  lastAccessed: number;
+  sections: StudySection[];
+  // SRS Progress Tracking
+  flashcardProgress: {
+    mastered: string[]; // IDs of mastered cards
+    queue: string[]; // IDs remaining to study
+  };
+  examScore?: {
+    score: number;
+    total: number;
+    date: number;
+  };
 }
 
 export interface AppTheme {

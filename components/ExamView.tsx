@@ -12,7 +12,7 @@ const ExamView: React.FC<ExamViewProps> = ({ sections, theme }) => {
   const [selectedAnswers, setSelectedAnswers] = useState<Record<number, number>>({});
   const [showResults, setShowResults] = useState(false);
 
-  // Flatten all questions from all sections
+  // Flatten all questions
   const questions = useMemo(() => {
     const allQuestions: { q: ExamQuestion; sourceTopic: string }[] = [];
     sections.forEach(section => {
@@ -28,26 +28,20 @@ const ExamView: React.FC<ExamViewProps> = ({ sections, theme }) => {
   if (questions.length === 0) {
     return (
       <div className="text-center py-20 text-slate-500">
-        <p className="text-xl">No exam questions were generated for this document.</p>
-        <p className="text-sm">Try processing a more detailed document.</p>
+        <p className="text-xl">No exam questions generated.</p>
       </div>
     );
   }
 
   const handleOptionSelect = (optionIndex: number) => {
-    if (showResults) return; // Prevent changing after submit
-    setSelectedAnswers(prev => ({
-      ...prev,
-      [currentQuestionIndex]: optionIndex
-    }));
+    if (showResults) return;
+    setSelectedAnswers(prev => ({ ...prev, [currentQuestionIndex]: optionIndex }));
   };
 
   const calculateScore = () => {
     let correct = 0;
     questions.forEach((item, idx) => {
-      if (selectedAnswers[idx] === item.q.correctIndex) {
-        correct++;
-      }
+      if (selectedAnswers[idx] === item.q.correctIndex) correct++;
     });
     return correct;
   };
@@ -55,7 +49,7 @@ const ExamView: React.FC<ExamViewProps> = ({ sections, theme }) => {
   const currentQ = questions[currentQuestionIndex];
   const isAnswered = selectedAnswers[currentQuestionIndex] !== undefined;
 
-  // Render Results View
+  // Results View
   if (showResults) {
     const score = calculateScore();
     const percentage = Math.round((score / questions.length) * 100);
@@ -68,7 +62,7 @@ const ExamView: React.FC<ExamViewProps> = ({ sections, theme }) => {
             {percentage}%
           </div>
           <p className="text-lg text-slate-600">
-            You got <span className="font-bold">{score}</span> out of <span className="font-bold">{questions.length}</span> correct.
+            {score} / {questions.length} Correct
           </p>
           <button 
             onClick={() => { setShowResults(false); setCurrentQuestionIndex(0); setSelectedAnswers({}); }}
@@ -83,26 +77,19 @@ const ExamView: React.FC<ExamViewProps> = ({ sections, theme }) => {
           {questions.map((item, idx) => {
             const userAns = selectedAnswers[idx];
             const isCorrect = userAns === item.q.correctIndex;
-            
             return (
               <div key={idx} className={`rounded-xl border p-6 bg-white ${isCorrect ? 'border-green-200' : 'border-red-200'}`}>
                 <div className="flex justify-between items-start mb-4">
                   <div className="text-sm font-medium px-2 py-1 rounded bg-slate-100 text-slate-500">
-                    Question {idx + 1}
+                    Q{idx + 1}
                   </div>
                   {isCorrect ? (
-                    <span className="text-green-600 font-bold flex items-center">
-                       <svg className="w-5 h-5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> Correct
-                    </span>
+                    <span className="text-green-600 font-bold flex items-center">Correct</span>
                   ) : (
-                    <span className="text-red-500 font-bold flex items-center">
-                       <svg className="w-5 h-5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg> Incorrect
-                    </span>
+                    <span className="text-red-500 font-bold flex items-center">Incorrect</span>
                   )}
                 </div>
-                
                 <h3 className="text-lg font-bold mb-4 text-slate-800">{item.q.question}</h3>
-                
                 <div className="space-y-2 mb-4">
                   {item.q.options.map((opt, optIdx) => (
                     <div 
@@ -119,12 +106,10 @@ const ExamView: React.FC<ExamViewProps> = ({ sections, theme }) => {
                     </div>
                   ))}
                 </div>
-
                 <div className="bg-blue-50 p-4 rounded-lg text-sm text-blue-800">
                   <span className="font-bold block mb-1">Explanation:</span>
                   {item.q.explanation}
                 </div>
-                <div className="mt-2 text-xs text-slate-400 text-right">Source: {item.sourceTopic}</div>
               </div>
             );
           })}
@@ -133,7 +118,7 @@ const ExamView: React.FC<ExamViewProps> = ({ sections, theme }) => {
     );
   }
 
-  // Render Quiz View
+  // Question View
   return (
     <div className="max-w-2xl mx-auto pb-20">
       <div className="mb-6 flex items-center justify-between">
@@ -143,7 +128,6 @@ const ExamView: React.FC<ExamViewProps> = ({ sections, theme }) => {
          </span>
       </div>
 
-      {/* Progress Bar */}
       <div className="w-full h-2 bg-slate-200 rounded-full mb-8 overflow-hidden">
         <div 
           className="h-full transition-all duration-300"
@@ -152,11 +136,6 @@ const ExamView: React.FC<ExamViewProps> = ({ sections, theme }) => {
       </div>
 
       <div className="bg-white rounded-2xl shadow-xl border p-8 relative overflow-hidden" style={{ borderColor: theme.colors.border }}>
-        {/* Topic Tag */}
-        <div className="absolute top-0 right-0 px-4 py-1 rounded-bl-xl text-xs font-bold text-white" style={{ backgroundColor: theme.colors.secondary, color: theme.colors.primary }}>
-           {currentQ.sourceTopic}
-        </div>
-
         <h2 className="text-xl sm:text-2xl font-bold mb-8 mt-4 leading-relaxed" style={{ color: theme.colors.text }}>
           {currentQ.q.question}
         </h2>
@@ -186,9 +165,7 @@ const ExamView: React.FC<ExamViewProps> = ({ sections, theme }) => {
                     backgroundColor: selectedAnswers[currentQuestionIndex] === idx ? theme.colors.primary : 'transparent'
                 }}
               >
-                {selectedAnswers[currentQuestionIndex] === idx && (
-                   <div className="w-2 h-2 bg-white rounded-full" />
-                )}
+                {selectedAnswers[currentQuestionIndex] === idx && <div className="w-2 h-2 bg-white rounded-full" />}
               </div>
               <span className={`text-base ${selectedAnswers[currentQuestionIndex] === idx ? 'font-medium' : ''}`} style={{ color: theme.colors.text }}>
                 {option}
@@ -198,12 +175,11 @@ const ExamView: React.FC<ExamViewProps> = ({ sections, theme }) => {
         </div>
       </div>
 
-      {/* Navigation Footer */}
       <div className="flex justify-between mt-8">
         <button
           onClick={() => setCurrentQuestionIndex(prev => Math.max(0, prev - 1))}
           disabled={currentQuestionIndex === 0}
-          className="px-6 py-3 rounded-xl font-medium text-slate-500 hover:bg-slate-100 disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+          className="px-6 py-3 rounded-xl font-medium text-slate-500 hover:bg-slate-100 disabled:opacity-30"
         >
           Previous
         </button>
@@ -212,7 +188,7 @@ const ExamView: React.FC<ExamViewProps> = ({ sections, theme }) => {
           <button
             onClick={() => setShowResults(true)}
             disabled={!isAnswered}
-            className="px-8 py-3 rounded-xl font-bold text-white shadow-lg shadow-brand-500/30 hover:shadow-xl hover:translate-y-[-1px] transition-all disabled:opacity-50 disabled:shadow-none"
+            className="px-8 py-3 rounded-xl font-bold text-white shadow-lg shadow-brand-500/30 hover:shadow-xl hover:translate-y-[-1px] transition-all disabled:opacity-50"
             style={{ backgroundColor: theme.colors.primary }}
           >
             Submit Exam
@@ -221,7 +197,7 @@ const ExamView: React.FC<ExamViewProps> = ({ sections, theme }) => {
           <button
             onClick={() => setCurrentQuestionIndex(prev => Math.min(questions.length - 1, prev + 1))}
             disabled={!isAnswered}
-             className="px-8 py-3 rounded-xl font-bold text-white shadow-lg shadow-brand-500/30 hover:shadow-xl hover:translate-y-[-1px] transition-all disabled:opacity-50 disabled:shadow-none"
+             className="px-8 py-3 rounded-xl font-bold text-white shadow-lg shadow-brand-500/30 hover:shadow-xl hover:translate-y-[-1px] transition-all disabled:opacity-50"
              style={{ backgroundColor: theme.colors.primary }}
           >
             Next Question

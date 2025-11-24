@@ -1,6 +1,23 @@
 
 import { StudySection, AppTheme, THEMES } from "../types";
 
+// Helper to convert Blob URL to Base64 for PPTX export
+const blobUrlToBase64 = async (blobUrl: string): Promise<string> => {
+  try {
+    const response = await fetch(blobUrl);
+    const blob = await response.blob();
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  } catch (error) {
+    console.warn("Failed to convert image for export", error);
+    return "";
+  }
+};
+
 export const exportToPptx = async (sections: StudySection[], fileName: string) => {
   if (!window.PptxGenJS) {
     throw new Error("PPTX generator not loaded");
@@ -28,13 +45,34 @@ export const exportToPptx = async (sections: StudySection[], fileName: string) =
   });
 
   // 2. Section Slides
-  sections.forEach((section) => {
+  for (const section of sections) {
     // A. Section Title Slide
     let sectionSlide = pres.addSlide();
     sectionSlide.background = { color: "0284C7" }; // Brand-600
     sectionSlide.addText(section.topic, { 
       x: 0.5, y: 3, w: "90%", fontSize: 32, color: "FFFFFF", bold: true, align: "center", fontFace: "Arial" 
     });
+
+    // Images Slide (if present)
+    if (section.images && section.images.length > 0) {
+       // Convert first 2 images to base64 to embed them
+       const imgPromises = section.images.slice(0, 2).map(img => blobUrlToBase64(img));
+       const base64Images = await Promise.all(imgPromises);
+
+       let imgSlide = pres.addSlide();
+       imgSlide.addText(`${section.topic} - Visuals`, { x:0.5, y:0.5, w:"90%", fontSize:18, color:"0284C7" });
+       
+       base64Images.forEach((b64, idx) => {
+         if (b64) {
+           const xPos = idx === 0 ? 0.5 : 5.5;
+           imgSlide.addImage({ data: b64, x: xPos, y: 1.5, w: 4.5, h: 4 });
+         }
+       });
+       
+       if (section.visualSummary) {
+          imgSlide.addText(section.visualSummary, { x: 0.5, y: 6, w: "90%", fontSize: 12, color: "64748B", italic: true });
+       }
+    }
 
     // B. Content Slides (Split into chunks for readability)
     const chunkSize = 3;
@@ -62,14 +100,17 @@ export const exportToPptx = async (sections: StudySection[], fileName: string) =
       let currentY = 1.6;
       chunk.forEach((point) => {
         const enText = point.keyTerm ? `[${point.keyTerm}] ${point.english}` : point.english;
-        
+        // Strip basic markdown
+        const cleanEn = enText.replace(/\*\*/g, "").replace(/`/g, "");
+        const cleanCn = point.chinese.replace(/\*\*/g, "").replace(/`/g, "");
+
         // English Column
-        contentSlide.addText(enText, { 
+        contentSlide.addText(cleanEn, { 
           x: 0.5, y: currentY, w: 4.5, fontSize: 12, color: "334155", valign: "top", fontFace: "Arial", bullet: true
         });
         
         // Chinese Column
-        contentSlide.addText(point.chinese, { 
+        contentSlide.addText(cleanCn, { 
           x: 5.2, y: currentY, w: 4.5, fontSize: 12, color: "334155", valign: "top", fontFace: "Microsoft YaHei" 
         });
         
@@ -79,7 +120,7 @@ export const exportToPptx = async (sections: StudySection[], fileName: string) =
       // Footer page number if needed
       contentSlide.addText("Bilingual Scholar", { x: 11.5, y: 7.0, fontSize: 10, color: "CBD5E1" });
     }
-  });
+  }
 
   await pres.writeFile({ fileName: `${cleanName}_StudyGuide.pptx` });
 };
@@ -143,14 +184,23 @@ export const exportToPdf = async (fileName: string, theme: AppTheme = THEMES[0])
   for (let i = 0; i < elements.length; i++) {
     const element = elements[i] as HTMLElement;
     
-    // High quality capture
+    // Dynamic scaling to prevent "Invalid string length" on massive elements
+    // A standard A4 @ scale 2 is roughly 1754 x 2480 pixels
+    // If element height is massive, reduce scale.
+    let scale = 1.5; // Reduced default scale from 2 to 1.5
+    if (element.offsetHeight > 2000) scale = 1;
+    if (element.offsetHeight > 4000) scale = 0.75;
+
+    // Use JPEG instead of PNG for massive space savings (avoid invalid string length)
     const canvas = await window.html2canvas(element, { 
-        scale: 2, 
+        scale: scale, 
         useCORS: true,
-        backgroundColor: theme.colors.card // Use theme card color
+        backgroundColor: theme.colors.card,
+        logging: false
     });
     
-    const imgData = canvas.toDataURL('image/png');
+    // Quality 0.8 reduces file size significantly
+    const imgData = canvas.toDataURL('image/jpeg', 0.8);
     const imgProps = doc.getImageProperties(imgData);
     
     // Calculate aspect ratio to fit width
@@ -165,7 +215,7 @@ export const exportToPdf = async (fileName: string, theme: AppTheme = THEMES[0])
       currentY = margin;
     }
 
-    doc.addImage(imgData, 'PNG', margin, currentY, imgWidth, imgHeight);
+    doc.addImage(imgData, 'JPEG', margin, currentY, imgWidth, imgHeight);
     
     // Add padding after image
     currentY += imgHeight + 10;

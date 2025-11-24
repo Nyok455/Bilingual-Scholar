@@ -1,5 +1,5 @@
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import FileUpload from './components/FileUpload';
 import StudyGuideView from './components/StudyGuideView';
 import FlashcardView from './components/FlashcardView';
@@ -8,36 +8,98 @@ import { FileIcon, LoadingIcon, PdfIcon, PptxIcon } from './components/Icons';
 import { extractTextFromFile } from './services/fileParser';
 import { generateStudyGuide } from './services/geminiService';
 import { exportToPdf, exportToPptx } from './services/exportService';
-import { ProcessingStatus, StudySection, THEMES, AppTheme } from './types';
+import { ProcessingStatus, StudySection, THEMES, AppTheme, StudyFile } from './types';
 
 type ViewMode = 'guide' | 'flashcards' | 'exam';
 
+const STORAGE_KEY = 'bilingual-scholar-files';
+
 const App: React.FC = () => {
   const [status, setStatus] = useState<ProcessingStatus>({ step: 'idle' });
-  const [studyData, setStudyData] = useState<StudySection[]>([]);
-  const [fileName, setFileName] = useState<string>('');
+  const [files, setFiles] = useState<StudyFile[]>([]);
+  const [activeFileId, setActiveFileId] = useState<string | null>(null);
   const [isExporting, setIsExporting] = useState<boolean>(false);
   const [viewMode, setViewMode] = useState<ViewMode>('guide');
   const [currentTheme, setCurrentTheme] = useState<AppTheme>(THEMES[0]);
 
+  const activeFile = files.find(f => f.id === activeFileId);
+
+  // Load Persistence
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        const parsedFiles: StudyFile[] = JSON.parse(saved);
+        setFiles(parsedFiles);
+        if (parsedFiles.length > 0) {
+          const sorted = [...parsedFiles].sort((a, b) => b.lastAccessed - a.lastAccessed);
+          setActiveFileId(sorted[0].id);
+          setStatus({ step: 'complete' });
+        }
+      }
+    } catch (e) {
+      console.error("Failed to load files", e);
+    }
+  }, []);
+
+  // Save Persistence (Handle Quota Limit)
+  useEffect(() => {
+    if (files.length > 0) {
+       try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(files));
+       } catch (e) {
+          console.warn("Storage quota exceeded. Images might be too large.");
+          // Fallback: Try saving without images if quota exceeded
+          const stripped = files.map(f => ({
+            ...f,
+            sections: f.sections.map(s => ({ ...s, images: [] }))
+          }));
+          try {
+             localStorage.setItem(STORAGE_KEY, JSON.stringify(stripped));
+          } catch(e2) {
+             console.error("Critical storage failure", e2);
+          }
+       }
+    }
+  }, [files]);
+
+  // Keyboard Navigation
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (status.step !== 'complete' || !activeFileId) return;
+
+      if (e.metaKey || e.ctrlKey) {
+        switch(e.key) {
+          case '1': e.preventDefault(); setViewMode('guide'); break;
+          case '2': e.preventDefault(); setViewMode('flashcards'); break;
+          case '3': e.preventDefault(); setViewMode('exam'); break;
+          case 'ArrowRight': 
+             e.preventDefault();
+             const currIdx = files.findIndex(f => f.id === activeFileId);
+             if (currIdx < files.length - 1) setActiveFileId(files[currIdx + 1].id);
+             break;
+          case 'ArrowLeft':
+             e.preventDefault();
+             const cIdx = files.findIndex(f => f.id === activeFileId);
+             if (cIdx > 0) setActiveFileId(files[cIdx - 1].id);
+             break;
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeFileId, files, status.step]);
+
   const handleFileSelect = useCallback(async (file: File) => {
-    setFileName(file.name);
-    setStudyData([]);
-    setStatus({ step: 'parsing', message: 'Extracting text and images from document...' });
+    setStatus({ step: 'parsing', message: 'Extracting text and high-res visuals from document...' });
 
     try {
-      // Step 1: Parse File (Get text AND images)
       const { text, imageMap } = await extractTextFromFile(file);
       
-      if (!text || text.length < 50) {
-        throw new Error("Could not extract enough text. The file might be empty or image-based.");
-      }
-
-      // Step 2: Generate Content
-      setStatus({ step: 'generating', message: 'Analyzing text, generating detailed notes, and creating exam questions...' });
+      setStatus({ step: 'generating', message: 'Analyzing content, generating detailed bilingual notes...' });
       const rawSections = await generateStudyGuide(text);
       
-      // Step 3: Post-process - Map Images to Sections
+      // Match AI sections to source images
       const enrichedSections = rawSections.map(section => {
         let matchedImages: string[] = [];
         const match = section.topic.match(/(?:Slide|Page)\s?(\d+)/i);
@@ -47,14 +109,22 @@ const App: React.FC = () => {
             matchedImages = imageMap[index];
           }
         }
-        return {
-          ...section,
-          images: matchedImages
-        };
+        return { ...section, images: matchedImages };
       });
 
-      setStudyData(enrichedSections);
+      const newFile: StudyFile = {
+        id: Date.now().toString(),
+        name: file.name,
+        uploadDate: Date.now(),
+        lastAccessed: Date.now(),
+        sections: enrichedSections,
+        flashcardProgress: { mastered: [], queue: [] },
+      };
+
+      setFiles(prev => [newFile, ...prev]);
+      setActiveFileId(newFile.id);
       setStatus({ step: 'complete' });
+      setViewMode('guide');
 
     } catch (error: any) {
       console.error(error);
@@ -62,18 +132,27 @@ const App: React.FC = () => {
     }
   }, []);
 
-  const handleReset = () => {
-    setStatus({ step: 'idle' });
-    setStudyData([]);
-    setFileName('');
-    setViewMode('guide');
+  const updateActiveFile = (updates: Partial<StudyFile>) => {
+    if (!activeFileId) return;
+    setFiles(prev => prev.map(f => f.id === activeFileId ? { ...f, ...updates, lastAccessed: Date.now() } : f));
+  };
+
+  const handleUpdateContent = (sectionIndex: number, contentIndex: number, field: 'english' | 'chinese', newValue: string) => {
+    if (!activeFile) return;
+    const newSections = [...activeFile.sections];
+    const section = { ...newSections[sectionIndex] };
+    const content = [...section.content];
+    content[contentIndex] = { ...content[contentIndex], [field]: newValue };
+    section.content = content;
+    newSections[sectionIndex] = section;
+    updateActiveFile({ sections: newSections });
   };
 
   const handleExportPdf = async () => {
+    if (!activeFile) return;
     setIsExporting(true);
     try {
-      // Pass the current theme to the export function
-      await exportToPdf(fileName, currentTheme);
+      await exportToPdf(activeFile.name, currentTheme);
     } catch (e) {
       console.error(e);
       alert("Failed to export PDF.");
@@ -83,9 +162,10 @@ const App: React.FC = () => {
   };
 
   const handleExportPptx = async () => {
+    if (!activeFile) return;
     setIsExporting(true);
     try {
-      await exportToPptx(studyData, fileName);
+      await exportToPptx(activeFile.sections, activeFile.name);
     } catch (e) {
       console.error(e);
       alert("Failed to export PPTX.");
@@ -94,275 +174,192 @@ const App: React.FC = () => {
     }
   };
 
-  return (
-    <div className="min-h-screen transition-colors duration-500" style={{ backgroundColor: currentTheme.colors.bg }}>
-      {/* Header */}
-      <header className="sticky top-0 z-50 backdrop-blur-md border-b transition-colors duration-500 shadow-sm" 
-        style={{ 
-          backgroundColor: `${currentTheme.colors.bg}E6`, // 90% opacity
-          borderColor: currentTheme.colors.border 
-        }}>
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <div className="flex items-center space-x-3 cursor-pointer" onClick={handleReset}>
-            <div className="w-9 h-9 rounded-lg flex items-center justify-center text-white font-serif font-bold text-xl shadow-md"
-              style={{ backgroundColor: currentTheme.colors.primary }}
-            >
-              B
-            </div>
-            <span className="text-xl font-extrabold tracking-tight" style={{ color: currentTheme.colors.text }}>Bilingual Scholar</span>
-          </div>
-          
-          <div className="flex items-center gap-6">
-             {/* Theme Selector */}
-             {status.step === 'complete' && (
-               <div className="hidden md:flex items-center space-x-3">
-                 <span className="text-xs font-bold uppercase tracking-wider" style={{ color: currentTheme.colors.subtext }}>Theme</span>
-                 <div className="flex bg-black/5 rounded-full p-1 border" style={{ borderColor: currentTheme.colors.border }}>
-                   {THEMES.map(theme => (
-                     <button
-                       key={theme.id}
-                       onClick={() => setCurrentTheme(theme)}
-                       className={`w-5 h-5 rounded-full mx-1 border transition-all ${currentTheme.id === theme.id ? 'ring-2 ring-offset-1 scale-110' : 'hover:scale-105 opacity-70 hover:opacity-100'}`}
-                       style={{ 
-                         backgroundColor: theme.colors.primary, 
-                         borderColor: currentTheme.id === theme.id ? theme.colors.text : 'transparent',
-                         '--tw-ring-color': theme.colors.text
-                       } as React.CSSProperties}
-                       title={theme.name}
-                     />
-                   ))}
-                 </div>
-               </div>
-             )}
+  const handleDeleteFile = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (window.confirm("Delete this file?")) {
+        const newFiles = files.filter(f => f.id !== id);
+        setFiles(newFiles);
+        if (activeFileId === id) {
+            setActiveFileId(newFiles.length > 0 ? newFiles[0].id : null);
+            if (newFiles.length === 0) setStatus({ step: 'idle' });
+        }
+    }
+  };
 
-            {status.step === 'complete' && (
+  return (
+    <div className="min-h-screen flex" style={{ backgroundColor: currentTheme.colors.bg }}>
+      
+      {/* Sidebar Navigation */}
+      {files.length > 0 && status.step === 'complete' && (
+        <aside className="w-64 border-r flex flex-col sticky top-0 h-screen overflow-y-auto flex-shrink-0 bg-white z-40 shadow-lg" style={{ borderColor: currentTheme.colors.border }}>
+           <div className="p-6 border-b" style={{ borderColor: currentTheme.colors.border, backgroundColor: currentTheme.colors.secondary }}>
+             <div className="flex items-center space-x-2 mb-1">
+                <div className="w-8 h-8 rounded-lg flex items-center justify-center text-white font-bold text-sm shadow-md" style={{ backgroundColor: currentTheme.colors.primary }}>BS</div>
+                <span className="font-bold tracking-tight text-lg" style={{ color: currentTheme.colors.text }}>Library</span>
+             </div>
+           </div>
+           
+           <div className="flex-grow p-4 space-y-2">
               <button 
-                onClick={handleReset}
-                className="text-sm font-semibold hover:underline transition-colors px-3 py-1 rounded-md hover:bg-black/5"
-                style={{ color: currentTheme.colors.subtext }}
+                 onClick={() => { setStatus({ step: 'idle' }); setActiveFileId(null); }}
+                 className="w-full flex items-center justify-center space-x-2 p-3 rounded-lg text-sm font-bold transition-all border border-dashed mb-6 hover:bg-slate-50 hover:border-slate-400 group"
+                 style={{ borderColor: currentTheme.colors.border, color: currentTheme.colors.subtext }}
               >
-                New Upload
+                 <span className="w-5 h-5 rounded-full border border-current flex items-center justify-center text-xs group-hover:bg-slate-200">+</span>
+                 <span>Upload New</span>
               </button>
-            )}
-          </div>
-        </div>
-      </header>
+
+              {files.map(file => (
+                  <div 
+                    key={file.id}
+                    onClick={() => { setActiveFileId(file.id); setStatus({ step: 'complete' }); }}
+                    className={`group relative w-full text-left p-3 rounded-lg text-sm transition-all cursor-pointer ${activeFileId === file.id ? 'shadow-md translate-x-1' : 'hover:bg-slate-50'}`}
+                    style={{ 
+                        backgroundColor: activeFileId === file.id ? currentTheme.colors.card : 'transparent',
+                        borderLeft: activeFileId === file.id ? `4px solid ${currentTheme.colors.primary}` : '4px solid transparent'
+                    }}
+                  >
+                     <h4 className="font-bold truncate pr-6" style={{ color: activeFileId === file.id ? currentTheme.colors.primary : currentTheme.colors.text }}>{file.name}</h4>
+                     <div className="flex justify-between items-center mt-1">
+                        <span className="text-xs opacity-50">{new Date(file.lastAccessed).toLocaleDateString()}</span>
+                     </div>
+                     <button 
+                       onClick={(e) => handleDeleteFile(file.id, e)}
+                       className="absolute top-3 right-2 text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                       title="Delete"
+                     >
+                        ×
+                     </button>
+                  </div>
+              ))}
+           </div>
+        </aside>
+      )}
 
       {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-        
-        {/* Intro / Upload State */}
-        {status.step === 'idle' && (
-          <div className="max-w-3xl mx-auto text-center space-y-10 animate-fade-in-up">
-            <div className="space-y-6">
-              <h1 className="text-5xl sm:text-6xl font-extrabold tracking-tight leading-tight" style={{ color: currentTheme.colors.text }}>
-                Turn Slides into <br/><span style={{ color: currentTheme.colors.primary }}>Deep Bilingual Knowledge</span>.
-              </h1>
-              <p className="text-xl leading-relaxed max-w-2xl mx-auto" style={{ color: currentTheme.colors.subtext }}>
-                Upload your course PDF or PPTX. Our AI extracts text & images, generates comprehensive notes, and creates practice exams to help you master the material.
-              </p>
-            </div>
-            
-            <div className="p-4 transform hover:scale-[1.01] transition-transform duration-300">
-              <FileUpload onFileSelect={handleFileSelect} />
-            </div>
-
-            <div className="pt-8 flex flex-wrap justify-center gap-8 text-sm font-medium" style={{ color: currentTheme.colors.subtext }}>
-              <span className="flex items-center px-4 py-2 rounded-full bg-white shadow-sm border" style={{ borderColor: currentTheme.colors.border }}>
-                 <span className="w-2.5 h-2.5 bg-green-500 rounded-full mr-3 animate-pulse"></span>
-                 Detailed Notes
-              </span>
-              <span className="flex items-center px-4 py-2 rounded-full bg-white shadow-sm border" style={{ borderColor: currentTheme.colors.border }}>
-                 <span className="w-2.5 h-2.5 bg-purple-500 rounded-full mr-3 animate-pulse"></span>
-                 Smart Practice Exams
-              </span>
-              <span className="flex items-center px-4 py-2 rounded-full bg-white shadow-sm border" style={{ borderColor: currentTheme.colors.border }}>
-                 <span className="w-2.5 h-2.5 bg-orange-500 rounded-full mr-3 animate-pulse"></span>
-                 Flashcards
-              </span>
-            </div>
-          </div>
-        )}
-
-        {/* Loading State */}
-        {(status.step === 'parsing' || status.step === 'generating') && (
-          <div className="max-w-md mx-auto text-center py-24">
-            <div className="rounded-3xl shadow-xl border relative overflow-hidden p-10 bg-white"
-              style={{ borderColor: currentTheme.colors.border }}
-            >
-               <div className="absolute top-0 left-0 w-full h-1.5 bg-slate-100">
-                  <div className="h-full animate-progress" style={{ backgroundColor: currentTheme.colors.primary }}></div>
-               </div>
-               <div className="w-20 h-20 rounded-2xl flex items-center justify-center mx-auto mb-8 shadow-inner"
-                 style={{ backgroundColor: currentTheme.colors.secondary }}
-               >
-                 <LoadingIcon />
-               </div>
-               <h3 className="text-2xl font-bold mb-3" style={{ color: currentTheme.colors.text }}>AI is Thinking...</h3>
-               <p className="text-lg leading-relaxed" style={{ color: currentTheme.colors.subtext }}>{status.message}</p>
-               {fileName && (
-                 <div className="mt-8 flex items-center justify-center space-x-3 text-sm py-3 px-4 rounded-xl border border-dashed"
-                   style={{ backgroundColor: currentTheme.colors.bg, color: currentTheme.colors.subtext, borderColor: currentTheme.colors.border }}
-                 >
-                    <FileIcon />
-                    <span className="truncate max-w-[200px] font-medium">{fileName}</span>
-                 </div>
-               )}
-            </div>
-          </div>
-        )}
-
-        {/* Error State */}
-        {status.step === 'error' && (
-          <div className="max-w-md mx-auto text-center py-12">
-             <div className="bg-red-50 p-8 rounded-2xl border border-red-100 text-red-900 shadow-sm">
-                <svg className="w-12 h-12 mx-auto mb-4 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                </svg>
-                <h3 className="font-bold text-xl mb-2">Processing Error</h3>
-                <p className="mb-6">{status.message}</p>
-                <button 
-                  onClick={handleReset}
-                  className="px-6 py-2 bg-white border border-red-200 text-red-700 rounded-lg hover:bg-red-50 transition-colors text-sm font-bold shadow-sm"
-                >
-                  Try Again
-                </button>
-             </div>
-          </div>
-        )}
-
-        {/* Results State */}
-        {status.step === 'complete' && studyData.length > 0 && (
-          <div className="animate-fade-in">
-             <div className="flex flex-col xl:flex-row items-end justify-between mb-10 gap-6">
-                <div>
-                   <h2 className="text-3xl font-extrabold mb-2" style={{ color: currentTheme.colors.text }}>
-                     {viewMode === 'guide' && 'Comprehensive Notes'}
-                     {viewMode === 'flashcards' && 'Active Recall Deck'}
-                     {viewMode === 'exam' && 'Practice Examination'}
-                   </h2>
-                   <p className="text-base font-medium flex items-center" style={{ color: currentTheme.colors.subtext }}>
-                     <FileIcon />
-                     <span className="ml-2">{fileName}</span>
-                   </p>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-4">
-                  {/* View Toggles */}
-                  <div className="flex p-1.5 rounded-xl border shadow-sm" style={{ backgroundColor: currentTheme.colors.card, borderColor: currentTheme.colors.border }}>
-                    <button 
-                      onClick={() => setViewMode('guide')}
-                      className={`px-5 py-2 rounded-lg text-sm font-bold transition-all ${
-                        viewMode === 'guide' 
-                          ? 'shadow-sm text-white' 
-                          : 'text-slate-500 hover:bg-slate-50'
-                      }`}
-                      style={{ 
-                        backgroundColor: viewMode === 'guide' ? currentTheme.colors.primary : 'transparent',
-                        color: viewMode === 'guide' ? '#fff' : undefined
-                      }}
-                    >
-                      Notes
-                    </button>
-                    <button 
-                      onClick={() => setViewMode('flashcards')}
-                      className={`px-5 py-2 rounded-lg text-sm font-bold transition-all ${
-                        viewMode === 'flashcards' 
-                          ? 'shadow-sm text-white' 
-                          : 'text-slate-500 hover:bg-slate-50'
-                      }`}
-                      style={{ 
-                        backgroundColor: viewMode === 'flashcards' ? currentTheme.colors.primary : 'transparent',
-                        color: viewMode === 'flashcards' ? '#fff' : undefined
-                      }}
-                    >
-                      Cards
-                    </button>
-                    <button 
-                      onClick={() => setViewMode('exam')}
-                      className={`px-5 py-2 rounded-lg text-sm font-bold transition-all ${
-                        viewMode === 'exam' 
-                          ? 'shadow-sm text-white' 
-                          : 'text-slate-500 hover:bg-slate-50'
-                      }`}
-                      style={{ 
-                        backgroundColor: viewMode === 'exam' ? currentTheme.colors.primary : 'transparent',
-                        color: viewMode === 'exam' ? '#fff' : undefined
-                      }}
-                    >
-                      Exam
-                    </button>
-                  </div>
-
-                  {/* Export Actions */}
-                  {viewMode === 'guide' && (
-                    <div className="flex items-center gap-3 border-l pl-4" style={{ borderColor: currentTheme.colors.border }}>
-                       <button 
-                        onClick={handleExportPptx}
-                        disabled={isExporting}
-                        className="flex items-center px-4 py-2.5 border shadow-sm text-sm font-bold rounded-xl hover:brightness-95 focus:outline-none disabled:opacity-50 transition-all bg-white"
-                        style={{ borderColor: currentTheme.colors.border, color: currentTheme.colors.text }}
-                      >
-                        {isExporting ? <span className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-slate-300 border-t-slate-600"></span> : <PptxIcon />}
-                        Save PPTX
-                      </button>
-                      <button 
-                        onClick={handleExportPdf}
-                        disabled={isExporting}
-                        className="flex items-center px-4 py-2.5 border shadow-sm text-sm font-bold rounded-xl text-white hover:brightness-90 focus:outline-none disabled:opacity-50 transition-all"
-                        style={{ backgroundColor: currentTheme.colors.primary, borderColor: currentTheme.colors.primary }}
-                      >
-                        {isExporting ? <span className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white"></span> : <PdfIcon />}
-                        Save PDF
-                      </button>
+      <div className="flex-grow flex flex-col w-full min-w-0">
+        <header className="sticky top-0 z-30 backdrop-blur-md border-b transition-colors duration-500 shadow-sm" 
+            style={{ backgroundColor: `${currentTheme.colors.bg}E6`, borderColor: currentTheme.colors.border }}>
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+                {status.step !== 'complete' ? (
+                    <div className="flex items-center space-x-3 cursor-pointer" onClick={() => window.location.reload()}>
+                        <span className="text-xl font-extrabold tracking-tight" style={{ color: currentTheme.colors.text }}>Bilingual Scholar</span>
                     </div>
-                  )}
+                ) : (
+                    <h2 className="text-lg font-bold truncate max-w-md" style={{ color: currentTheme.colors.text }}>
+                        {activeFile?.name}
+                    </h2>
+                )}
+                <div className="flex items-center gap-4">
+                    {status.step === 'complete' && (
+                        <div className="hidden md:flex items-center space-x-2 bg-black/5 rounded-full p-1 border">
+                            {THEMES.map(theme => (
+                                <button
+                                key={theme.id}
+                                onClick={() => setCurrentTheme(theme)}
+                                className={`w-5 h-5 rounded-full mx-1 border transition-all ${currentTheme.id === theme.id ? 'ring-2 ring-offset-1 scale-110' : 'opacity-70 hover:opacity-100'}`}
+                                style={{ 
+                                    backgroundColor: theme.colors.primary, 
+                                    borderColor: currentTheme.id === theme.id ? theme.colors.text : 'transparent',
+                                    '--tw-ring-color': theme.colors.text
+                                } as React.CSSProperties}
+                                />
+                            ))}
+                        </div>
+                    )}
                 </div>
-             </div>
-             
-             {viewMode === 'guide' && <StudyGuideView sections={studyData} theme={currentTheme} />}
-             {viewMode === 'flashcards' && <FlashcardView sections={studyData} />}
-             {viewMode === 'exam' && <ExamView sections={studyData} theme={currentTheme} />}
-          </div>
-        )}
+            </div>
+        </header>
 
-      </main>
+        <main className="flex-grow w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+            
+            {status.step === 'idle' && (
+                <div className="max-w-3xl mx-auto text-center space-y-10 animate-fade-in-up mt-10">
+                     <h1 className="text-5xl sm:text-6xl font-extrabold tracking-tight leading-tight" style={{ color: currentTheme.colors.text }}>
+                        Your Personal <br/><span style={{ color: currentTheme.colors.primary }}>Bilingual Tutor</span>.
+                     </h1>
+                     <p className="text-xl leading-relaxed max-w-2xl mx-auto" style={{ color: currentTheme.colors.subtext }}>
+                        Upload PDF or PPTX. Get instant side-by-side notes, interactive flashcards, and exams.
+                     </p>
+                     <div className="p-4 transform hover:scale-[1.01] transition-transform duration-300">
+                        <FileUpload onFileSelect={handleFileSelect} />
+                     </div>
+                </div>
+            )}
 
-      {/* Footer */}
-      <footer className="border-t py-10 mt-auto transition-colors duration-500" 
-        style={{ 
-            backgroundColor: currentTheme.colors.bg, 
-            borderColor: currentTheme.colors.border 
-        }}>
-        <div className="max-w-7xl mx-auto px-4 text-center">
-            <p className="text-sm font-medium mb-2" style={{ color: currentTheme.colors.text }}>Bilingual Scholar</p>
-            <p className="text-xs opacity-60" style={{ color: currentTheme.colors.subtext }}>© {new Date().getFullYear()} AI-Powered Learning Assistant. All rights reserved.</p>
-        </div>
-      </footer>
-      
+            {(status.step === 'parsing' || status.step === 'generating') && (
+                <div className="max-w-md mx-auto text-center py-24">
+                    <div className="rounded-3xl shadow-xl border relative overflow-hidden p-10 bg-white" style={{ borderColor: currentTheme.colors.border }}>
+                        <div className="absolute top-0 left-0 w-full h-1.5 bg-slate-100">
+                            <div className="h-full animate-progress" style={{ backgroundColor: currentTheme.colors.primary }}></div>
+                        </div>
+                        <div className="w-20 h-20 rounded-2xl flex items-center justify-center mx-auto mb-8 shadow-inner" style={{ backgroundColor: currentTheme.colors.secondary }}>
+                            <LoadingIcon />
+                        </div>
+                        <h3 className="text-2xl font-bold mb-3" style={{ color: currentTheme.colors.text }}>Processing...</h3>
+                        <p className="text-lg" style={{ color: currentTheme.colors.subtext }}>{status.message}</p>
+                    </div>
+                </div>
+            )}
+
+            {status.step === 'error' && (
+                <div className="max-w-md mx-auto text-center py-12">
+                    <div className="bg-red-50 p-8 rounded-2xl border border-red-100 text-red-900 shadow-sm">
+                        <h3 className="font-bold text-xl mb-2">Error</h3>
+                        <p className="mb-6">{status.message}</p>
+                        <button onClick={() => setStatus({ step: 'idle' })} className="px-6 py-2 bg-white border border-red-200 rounded-lg shadow-sm font-bold">Try Again</button>
+                    </div>
+                </div>
+            )}
+
+            {status.step === 'complete' && activeFile && (
+                <div className="animate-fade-in">
+                    <div className="flex flex-col md:flex-row items-center justify-between mb-8 gap-4 border-b pb-6" style={{ borderColor: currentTheme.colors.border }}>
+                        <nav className="flex p-1 rounded-xl bg-slate-100/50 border" style={{ borderColor: currentTheme.colors.border }}>
+                             {(['guide', 'flashcards', 'exam'] as ViewMode[]).map((mode) => (
+                                 <button
+                                    key={mode}
+                                    onClick={() => setViewMode(mode)}
+                                    className={`px-6 py-2.5 rounded-lg text-sm font-bold capitalize transition-all ${viewMode === mode ? 'shadow-sm text-white' : 'text-slate-500 hover:text-slate-800'}`}
+                                    style={{ backgroundColor: viewMode === mode ? currentTheme.colors.primary : 'transparent' }}
+                                 >
+                                     {mode === 'guide' ? 'Notes' : mode}
+                                 </button>
+                             ))}
+                        </nav>
+                        {viewMode === 'guide' && (
+                            <div className="flex items-center gap-3">
+                                <button onClick={handleExportPptx} disabled={isExporting} className="flex items-center px-4 py-2 border rounded-lg bg-white hover:bg-slate-50 shadow-sm text-sm font-medium" style={{ borderColor: currentTheme.colors.border }}>
+                                     {isExporting ? '...' : <PptxIcon />} <span className="ml-2">PPTX</span>
+                                </button>
+                                <button onClick={handleExportPdf} disabled={isExporting} className="flex items-center px-4 py-2 border rounded-lg text-white shadow-sm text-sm font-medium" style={{ backgroundColor: currentTheme.colors.primary, borderColor: currentTheme.colors.primary }}>
+                                     {isExporting ? '...' : <PdfIcon />} <span className="ml-2">PDF</span>
+                                </button>
+                            </div>
+                        )}
+                    </div>
+
+                    {viewMode === 'guide' && (
+                        <StudyGuideView 
+                            sections={activeFile.sections} 
+                            theme={currentTheme} 
+                            onUpdateContent={handleUpdateContent}
+                        />
+                    )}
+                    {viewMode === 'flashcards' && <FlashcardView sections={activeFile.sections} />}
+                    {viewMode === 'exam' && <ExamView sections={activeFile.sections} theme={currentTheme} />}
+                </div>
+            )}
+        </main>
+      </div>
+
       <style>{`
-        @keyframes progress {
-          0% { width: 0%; }
-          50% { width: 70%; }
-          100% { width: 90%; }
-        }
-        .animate-progress {
-          animation: progress 30s ease-out forwards;
-        }
-        @keyframes fade-in-up {
-           from { opacity: 0; transform: translateY(20px); }
-           to { opacity: 1; transform: translateY(0); }
-        }
-        .animate-fade-in-up {
-           animation: fade-in-up 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-        }
-         @keyframes fade-in {
-           from { opacity: 0; }
-           to { opacity: 1; }
-        }
-        .animate-fade-in {
-           animation: fade-in 0.6s ease-out forwards;
-        }
+        @keyframes progress { 0% { width: 0%; } 50% { width: 70%; } 100% { width: 90%; } }
+        .animate-progress { animation: progress 30s ease-out forwards; }
+        .animate-fade-in-up { animation: fade-in-up 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+        @keyframes fade-in-up { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+        .animate-fade-in { animation: fade-in 0.6s ease-out forwards; }
+        @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
       `}</style>
     </div>
   );

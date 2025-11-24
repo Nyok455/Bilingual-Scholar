@@ -1,3 +1,4 @@
+
 import { ParsedResult } from "../types";
 
 // We rely on the global window objects for these libraries to avoid bundler complexity.
@@ -29,15 +30,40 @@ const extractPdfText = async (file: File): Promise<ParsedResult> => {
   const pdf = await loadingTask.promise;
   
   let fullText = "";
-  // PDF Image extraction is complex in browser-only env without heavy deps. 
-  // Returning empty map for now.
   const imageMap: Record<number, string[]> = {}; 
 
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
+    
+    // 1. Extract Text
     const textContent = await page.getTextContent();
     const pageText = textContent.items.map((item: any) => item.str).join(" ");
-    fullText += `--- Page ${i} ---\n${pageText}\n\n`;
+    if (pageText.trim().length > 0) {
+        fullText += `--- Page ${i} ---\n${pageText}\n\n`;
+    }
+
+    // 2. Render Page as Image (to capture formulas, diagrams, etc.)
+    // We limit scale to 1.5 to balance quality vs memory/storage
+    try {
+        const viewport = page.getViewport({ scale: 1.5 });
+        const canvas = document.createElement('canvas');
+        const context = canvas.getContext('2d');
+        canvas.height = viewport.height;
+        canvas.width = viewport.width;
+
+        await page.render({ canvasContext: context, viewport: viewport }).promise;
+        
+        // Convert to JPEG with 0.8 quality to save space
+        const imgUrl = canvas.toDataURL('image/jpeg', 0.8);
+        imageMap[i] = [imgUrl];
+    } catch (e) {
+        console.warn(`Failed to render page ${i} as image`, e);
+    }
+  }
+
+  // Fallback if document is scanned or empty text
+  if (fullText.length < 50) {
+     throw new Error("This document appears to be empty or scanned images without OCR. Please try a document with selectable text.");
   }
 
   return { text: fullText, imageMap };
