@@ -4,7 +4,7 @@ import FileUpload from './components/FileUpload';
 import StudyGuideView from './components/StudyGuideView';
 import FlashcardView from './components/FlashcardView';
 import ExamView from './components/ExamView';
-import { FileIcon, LoadingIcon, PdfIcon, PptxIcon } from './components/Icons';
+import { FileIcon, LoadingIcon, PdfIcon, PptxIcon, PaletteIcon } from './components/Icons';
 import { extractTextFromFile } from './services/fileParser';
 import { generateStudyGuide } from './services/geminiService';
 import { exportToPdf, exportToPptx } from './services/exportService';
@@ -21,6 +21,7 @@ const App: React.FC = () => {
   const [isExporting, setIsExporting] = useState<boolean>(false);
   const [viewMode, setViewMode] = useState<ViewMode>('guide');
   const [currentTheme, setCurrentTheme] = useState<AppTheme>(THEMES[0]);
+  const [showThemeMenu, setShowThemeMenu] = useState<boolean>(false);
 
   const activeFile = files.find(f => f.id === activeFileId);
 
@@ -165,7 +166,7 @@ const App: React.FC = () => {
     if (!activeFile) return;
     setIsExporting(true);
     try {
-      await exportToPptx(activeFile.sections, activeFile.name);
+      await exportToPptx(activeFile.sections, activeFile.name, currentTheme);
     } catch (e) {
       console.error(e);
       alert("Failed to export PPTX.");
@@ -329,6 +330,35 @@ const App: React.FC = () => {
                         </nav>
                         {viewMode === 'guide' && (
                             <div className="flex items-center gap-3">
+                                {/* Theme Selector for Export */}
+                                <div className="relative">
+                                    <button 
+                                        onClick={() => setShowThemeMenu(!showThemeMenu)}
+                                        className="flex items-center px-3 py-2 border rounded-lg bg-white hover:bg-slate-50 shadow-sm text-sm font-medium transition-colors"
+                                        style={{ borderColor: currentTheme.colors.border, color: currentTheme.colors.text }}
+                                        title="Select Export Theme"
+                                    >
+                                        <PaletteIcon />
+                                    </button>
+                                    
+                                    {showThemeMenu && (
+                                        <div className="absolute right-0 top-full mt-2 w-56 bg-white rounded-xl shadow-xl border p-2 z-50 grid grid-cols-1 gap-1" style={{ borderColor: currentTheme.colors.border }}>
+                                            <div className="text-xs font-bold px-3 py-2 text-slate-400 uppercase tracking-wider">Select Theme</div>
+                                            {THEMES.map(theme => (
+                                                <button
+                                                    key={theme.id}
+                                                    onClick={() => { setCurrentTheme(theme); setShowThemeMenu(false); }}
+                                                    className={`flex items-center w-full px-3 py-2 rounded-lg text-sm transition-all text-left ${currentTheme.id === theme.id ? 'bg-slate-100 font-bold' : 'hover:bg-slate-50'}`}
+                                                >
+                                                    <div className="w-4 h-4 rounded-full mr-3 border" style={{ backgroundColor: theme.colors.primary, borderColor: theme.colors.text }}></div>
+                                                    <span style={{ color: theme.colors.text }}>{theme.name}</span>
+                                                    {currentTheme.id === theme.id && <span className="ml-auto text-xs font-bold text-slate-400">Active</span>}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                                
                                 <button onClick={handleExportPptx} disabled={isExporting} className="flex items-center px-4 py-2 border rounded-lg bg-white hover:bg-slate-50 shadow-sm text-sm font-medium" style={{ borderColor: currentTheme.colors.border }}>
                                      {isExporting ? '...' : <PptxIcon />} <span className="ml-2">PPTX</span>
                                 </button>
