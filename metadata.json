@@ -1,0 +1,5 @@
+{
+  "name": "Bilingual Scholar",
+  "description": "Transforms PDF and PPTX documents into detailed, side-by-side Chinese-English study guides using Gemini 2.5 Flash.",
+  "requestFramePermissions": []
+}
